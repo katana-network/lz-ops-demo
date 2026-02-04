@@ -9,6 +9,8 @@ This project enables cross-chain vault operations across three chains:
 - **Katana** - Users can hold vault shares (vbUSDC)
 - **Base** - Bridge USDC for atomic operations
 
+**Supported Assets:** USDC, USDT, and WBTC (ETH/WETH not supported)
+
 ## Quick Start
 
 ### 1. Install Dependencies
