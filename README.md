@@ -207,6 +207,168 @@ transaction: {
 
 ---
 
+## Katana Vault Bridge vs Standard Bridging
+
+The key differences between bridging assets to/from **Katana network** (using Vault Bridge) versus standard LayerZero OFT/Stargate bridging to other layer 2 networks.
+
+---
+
+## Key Differences
+
+| Aspect | Standard Bridge | Katana Vault Bridge |
+|--------|-----------------|---------------------|
+| **Asset** | Same token in/out | USDC in → vbUSDC out |
+| **Yield** | None | Underlying earns via Morpho vaults |
+| **Contracts** | 1 (Pool/OFT) | 3+ (Vault + Composer + OFT) |
+| **Compose** | Optional | Required for redemptions |
+| **Gas** | ~100-200k | 800k-1.2M |
+| **Hub Chain** | Direct | Always routes through Ethereum |
+| **Supported Assets** | Any OFT | USDC, USDT, WBTC only (no ETH/WETH currently) |
+
+---
+
+## Difference #1: Token Type Received
+
+| Network | Token Deposited | Token Received | Mechanism |
+|---------|-----------------|----------------|-----------|
+| **Katana** | USDC | **vbUSDC** (vault shares) | ERC4626 vault deposit + OFT bridge |
+| **Other L2** | USDC | USDC | Standard Stargate/OFT bridge |
+
+**Katana-specific**: You receive **yield-bearing vault shares**, not the underlying asset.
+
+---
+
+## Difference #2: Contract Architecture
+
+### Standard Bridge (Base ↔ Ethereum)
+```
+Stargate Pool.send() → LayerZero → Stargate Pool.lzReceive()
+```
+- Single contract type (Stargate Pool)
+- Direct token transfer
+
+### Katana Bridge (via OVaultComposer)
+```
+User → OVaultComposer.depositAndSend() → [Vault.deposit() + ShareOFT.send()]
+```
+- Multiple contracts orchestrated:
+  - `VaultBridge` (0x53E8...) - ERC4626 vault
+  - `OVaultComposer` (0x8A35...) - orchestration layer
+  - `Share OFT Adapter` (0xb5bA...) - cross-chain share transfer
+
+---
+
+## Difference #3: Functions Used
+
+| Operation | Standard OFT/Stargate | Katana Vault Bridge |
+|-----------|----------------------|---------------------|
+| **Deposit** | `pool.send()` | `composer.depositAndSend()` |
+| **Quote** | `pool.quoteSend()` | `vault.previewDeposit()` + `shareOFT.quoteSend()` |
+| **Redeem** | `pool.send()` | `shareOFT.send()` with `lzCompose` callback |
+| **Preview** | N/A | `vault.previewDeposit()` / `vault.previewRedeem()` |
+
+---
+
+## Difference #4: Compose Messages (Multi-hop)
+
+Katana requires `lzCompose` for redemption flows. The compose message encodes the next-hop instructions:
+
+```typescript
+// Encode compose message: (SendParam, uint256 msgValue)
+const composeMsg = ethers.utils.defaultAbiCoder.encode(
+    ['tuple(uint32,bytes32,uint256,uint256,bytes,bytes,bytes)', 'uint256'],
+    [
+        [
+            secondHopSendParam.dstEid,
+            secondHopSendParam.to,
+            secondHopSendParam.amountLD,
+            secondHopSendParam.minAmountLD,
+            secondHopSendParam.extraOptions,
+            secondHopSendParam.composeMsg,
+            secondHopSendParam.oftCmd,
+        ],
+        secondHopValue,  // ETH for second hop
+    ]
+)
+```
+
+**Standard bridges** don't need this compose pattern - they're single-hop.
+
+---
+
+## Difference #5: Gas Requirements
+
+| Script | Network Flow | Compose Gas | Notes |
+|--------|--------------|-------------|-------|
+| **Script 1** | ETH → Katana | N/A | Simple deposit+bridge |
+| **Script 2** | Katana → ETH | **800,000** | Needs compose for vault redemption |
+| **Script 3** | Base → Katana | **1,000,000** | Two-hop: Stargate + Vault + OFT |
+| **Script 4** | Katana → Base | **1,200,000** | Two-hop: OFT + Vault + Stargate |
+
+**Standard bridges** typically need ~100,000-200,000 gas.
+
+---
+
+## Difference #6: Flow Patterns
+
+### Depositing TO Katana
+
+#### Direct from Ethereum (Script 1)
+```
+1. approve(USDC → OVaultComposer)
+2. composer.depositAndSend(amount, sendParam, refund)
+   └── internally: vault.deposit() → shareOFT.send()
+```
+
+#### Atomic from Base (Script 3 - 2-hop)
+```
+1. approve(USDC → Stargate Pool)
+2. stargatePool.send() with composeMsg
+   └── Hop 1: Base → Ethereum (USDC via Stargate)
+   └── lzCompose: composer deposits + bridges shares
+   └── Hop 2: Ethereum → Katana (vbUSDC via OFT)
+```
+
+### Withdrawing FROM Katana
+
+#### To Ethereum (Script 2)
+```
+1. approve(vbUSDC → Share OFT on Katana)
+2. shareOFT.send() with composeMsg
+   └── bridges shares to OVaultComposer
+   └── lzCompose: composer.redeem() → sends USDC to recipient
+```
+
+#### Atomic to Base (Script 4 - 2-hop)
+```
+1. approve(vbUSDC → Share OFT on Katana)
+2. shareOFT.send() with nested composeMsg
+   └── Hop 1: Katana → Ethereum (shares via OFT)
+   └── lzCompose: composer.redeem() + stargate.send()
+   └── Hop 2: Ethereum → Base (USDC via Stargate)
+```
+
+---
+
+## Difference #7: Options Builder Pattern
+
+### Katana redemption requires compose options:
+```typescript
+const options = Options.newOptions()
+    .addExecutorComposeOption(0, CONFIG.transaction.composeGas, secondHopValue)
+const extraOptions = options.toHex()
+```
+
+### Standard OFT just needs receive option:
+```typescript
+const options = Options.newOptions()
+    .addExecutorLzReceiveOption(100000, 0)
+```
+
+---
+
+
+
 ## Contract Addresses (Mainnet)
 
 ### Ethereum (EID: 30101)
