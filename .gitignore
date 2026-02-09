@@ -25,3 +25,5 @@ npm-debug.log*
 
 # TypeScript cache
 *.tsbuildinfo
+
+safe_payloads/

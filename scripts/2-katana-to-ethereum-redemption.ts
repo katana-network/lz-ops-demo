@@ -26,6 +26,7 @@
 import { ethers } from 'ethers'
 import { parseUnits } from 'ethers/lib/utils'
 import { Options, addressToBytes32 } from '@layerzerolabs/lz-v2-utilities'
+import { isSafeMode, buildSafeTx, writeSafePayload, SafeTransaction } from './utils/safe-payload'
 
 // ============================================================================
 // Configuration
@@ -83,6 +84,9 @@ const CONFIG = {
 // Main Script
 // ============================================================================
 
+const SAFE_MODE = isSafeMode()
+const safeTxs: SafeTransaction[] = []
+
 async function main() {
     console.log('='.repeat(80))
     console.log('Katana to Ethereum Redemption')
@@ -90,7 +94,7 @@ async function main() {
     console.log('='.repeat(80))
 
     // Validate configuration
-    if (CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
+    if (!SAFE_MODE && CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
         throw new Error('Please set your private key in CONFIG.privateKey')
     }
     if (CONFIG.transaction.recipientAddress === '<YOUR_RECIPIENT_ADDRESS_ON_ETHEREUM>') {
@@ -103,9 +107,13 @@ async function main() {
     // Setup providers and wallet
     const katanaProvider = new ethers.providers.JsonRpcProvider(CONFIG.katana.rpcUrl)
     const ethereumProvider = new ethers.providers.JsonRpcProvider(CONFIG.ethereum.rpcUrl)
-    const katanaWallet = new ethers.Wallet(CONFIG.privateKey, katanaProvider)
+    const katanaWallet = SAFE_MODE ? null : new ethers.Wallet(CONFIG.privateKey, katanaProvider)
 
-    console.log(`\n📍 Wallet Address: ${katanaWallet.address}`)
+    if (SAFE_MODE) {
+        console.log(`\n🔐 Safe Mode: Generating transaction payload`)
+    } else {
+        console.log(`\n📍 Wallet Address: ${katanaWallet!.address}`)
+    }
     console.log(`💰 Amount: ${CONFIG.transaction.amount} vbUSDC shares`)
     console.log(`📬 Recipient (Ethereum): ${CONFIG.transaction.recipientAddress}`)
     console.log('='.repeat(80))
@@ -125,19 +133,23 @@ async function main() {
         'function approve(address,uint256) returns (bool)',
     ]
 
-    const vbUsdc = new ethers.Contract(CONFIG.contracts.katana.vbUsdcToken, erc20Abi, katanaWallet)
+    const vbUsdc = new ethers.Contract(CONFIG.contracts.katana.vbUsdcToken, erc20Abi, katanaWallet || katanaProvider)
     const shareDecimals = await vbUsdc.decimals()
     const amount = parseUnits(CONFIG.transaction.amount, shareDecimals)
 
-    const balance = await vbUsdc.balanceOf(katanaWallet.address)
-    console.log(`   Your vbUSDC balance: ${ethers.utils.formatUnits(balance, shareDecimals)} vbUSDC`)
+    if (!SAFE_MODE) {
+        const balance = await vbUsdc.balanceOf(katanaWallet!.address)
+        console.log(`   Your vbUSDC balance: ${ethers.utils.formatUnits(balance, shareDecimals)} vbUSDC`)
 
-    if (balance.lt(amount)) {
-        throw new Error(
-            `Insufficient vbUSDC balance. Need ${CONFIG.transaction.amount}, have ${ethers.utils.formatUnits(balance, shareDecimals)}`
-        )
+        if (balance.lt(amount)) {
+            throw new Error(
+                `Insufficient vbUSDC balance. Need ${CONFIG.transaction.amount}, have ${ethers.utils.formatUnits(balance, shareDecimals)}`
+            )
+        }
+        console.log(`   ✅ Sufficient balance`)
+    } else {
+        console.log(`   ⏭️  Balance check skipped in Safe mode`)
     }
-    console.log(`   ✅ Sufficient balance`)
 
     // ============================================================================
     // Step 2: Preview Vault Redemption
@@ -263,7 +275,7 @@ async function main() {
         'function quoteSend((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),bool) view returns ((uint256,uint256))',
         'function send((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),(uint256,uint256),address) payable returns ((bytes32,uint64))',
     ]
-    const shareOFT = new ethers.Contract(CONFIG.contracts.katana.shareOFT, oftAbi, katanaWallet)
+    const shareOFT = new ethers.Contract(CONFIG.contracts.katana.shareOFT, oftAbi, katanaWallet || katanaProvider)
 
     const quote = await shareOFT.quoteSend(
         [
@@ -294,17 +306,25 @@ async function main() {
     console.log('Step 7: Approving vbUSDC to Share OFT on Katana')
     console.log('='.repeat(80))
 
-    const allowance = await vbUsdc.allowance(katanaWallet.address, CONFIG.contracts.katana.shareOFT)
-    console.log(`   Current allowance: ${ethers.utils.formatUnits(allowance, shareDecimals)} vbUSDC`)
-
-    if (allowance.lt(amount)) {
-        console.log(`   🔓 Approving vbUSDC...`)
-        const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, ethers.constants.MaxUint256)
-        console.log(`   Transaction: ${approveTx.hash}`)
-        await approveTx.wait()
-        console.log(`   ✅ Approval confirmed`)
+    if (SAFE_MODE) {
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.katana.vbUsdcToken,
+            vbUsdc.interface.encodeFunctionData('approve', [CONFIG.contracts.katana.shareOFT, ethers.constants.MaxUint256])
+        ))
+        console.log(`   ✅ Approval added to Safe payload`)
     } else {
-        console.log(`   ✅ Sufficient allowance`)
+        const allowance = await vbUsdc.allowance(katanaWallet!.address, CONFIG.contracts.katana.shareOFT)
+        console.log(`   Current allowance: ${ethers.utils.formatUnits(allowance, shareDecimals)} vbUSDC`)
+
+        if (allowance.lt(amount)) {
+            console.log(`   🔓 Approving vbUSDC...`)
+            const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, ethers.constants.MaxUint256)
+            console.log(`   Transaction: ${approveTx.hash}`)
+            await approveTx.wait()
+            console.log(`   ✅ Approval confirmed`)
+        } else {
+            console.log(`   ✅ Sufficient allowance`)
+        }
     }
 
     // ============================================================================
@@ -321,6 +341,29 @@ async function main() {
     console.log(`   3. Composer redeems shares for USDC`)
     console.log(`   4. USDC sent to recipient on Ethereum`)
 
+    if (SAFE_MODE) {
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.katana.shareOFT,
+            shareOFT.interface.encodeFunctionData('send', [
+                [sendParam.dstEid, sendParam.to, sendParam.amountLD, sendParam.minAmountLD, sendParam.extraOptions, sendParam.composeMsg, sendParam.oftCmd],
+                [messagingFee.nativeFee, messagingFee.lzTokenFee],
+                CONFIG.transaction.recipientAddress,
+            ]),
+            messagingFee.nativeFee.toString()
+        ))
+
+        const { chainId } = await katanaProvider.getNetwork()
+        const filepath = writeSafePayload(2, chainId, 'Katana to Ethereum Redemption', safeTxs)
+        console.log('\n' + '='.repeat(80))
+        console.log('✅ Safe Payload Generated')
+        console.log('='.repeat(80))
+        console.log(`   File: ${filepath}`)
+        console.log(`   Transactions: ${safeTxs.length} (approval + bridge & redeem)`)
+        console.log(`   Import this file into Safe Transaction Builder`)
+        console.log('='.repeat(80))
+        return
+    }
+
     console.log(`\n📤 Sending transaction...`)
     const tx = await shareOFT.send(
         [
@@ -333,7 +376,7 @@ async function main() {
             sendParam.oftCmd,
         ],
         [messagingFee.nativeFee, messagingFee.lzTokenFee],
-        katanaWallet.address, // refund address
+        katanaWallet!.address, // refund address
         { value: messagingFee.nativeFee }
     )
 
