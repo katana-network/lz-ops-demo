@@ -2,23 +2,24 @@
 /**
  * Katana to Base Atomic Redemption
  *
- * Redeems vault shares (vbUSDC) from Katana and sends USDC to Base
+ * Redeems vault shares from Katana and sends asset to Base
  * via Ethereum in a single atomic transaction.
  * Uses LayerZero compose to chain multiple cross-chain operations.
+ * (e.g. vbUSDC → USDC, vbUSDT → USDT, vbWBTC → WBTC)
  *
  * Architecture:
  * - Source: Katana (user has vault shares)
  * - Hub: Ethereum (has the main ERC4626 vault, transit chain)
- * - Destination: Base (user receives USDC)
+ * - Destination: Base (user receives asset)
  *
  * Flow:
- * 1. User approves vbUSDC shares to Share OFT Adapter on Katana
+ * 1. User approves vault shares to Share OFT Adapter on Katana
  * 2. Share OFT bridges shares to OVaultComposer on Ethereum with compose message
  * 3. Composer receives shares via lzCompose callback
- * 4. Composer redeems shares from vault for USDC
- * 5. Composer bridges USDC to recipient on Base via Stargate
+ * 4. Composer redeems shares from vault for asset
+ * 5. Composer bridges asset to recipient on Base via Stargate
  *
- * Result: User sends vbUSDC on Katana, receives USDC on Base
+ * Result: User sends vault shares on Katana, receives asset on Base
  *
  * Transactions Required: 2 (1 approval + 1 atomic bridge & redeem)
  *
@@ -40,8 +41,8 @@ const CONFIG = {
     privateKey: '<YOUR_PRIVATE_KEY_HERE>',
 
     transaction: {
-        shareAmount: '0.02', // Amount in vbUSDC shares (e.g., '10' = 10 shares)
-        recipientAddress: '<YOUR_RECIPIENT_ADDRESS_ON_BASE>', // Will receive USDC on Base
+        amount: '0.02', // Amount of vault shares to redeem (e.g. '10.0' vbUSDC)
+        recipientAddress: '<YOUR_RECIPIENT_ADDRESS_ON_BASE>', // Will receive asset on Base
         slippageBps: 50, // 0.5% slippage for both hops
         composeGas: 1200000, // Gas for redeem + bridge on Ethereum (1.2M for safety)
     },
@@ -68,22 +69,17 @@ const CONFIG = {
     // Contract Addresses
     // ============================================
     contracts: {
-        // Katana contracts
         katana: {
-            // vbUSDC token on Katana (OFT representation of vault shares)
-            vbUsdcToken: '0x203A662b0BD271A6ed5a60EdFbd04bFce608FD36',
-            // Share OFT Adapter on Katana
-            shareOFT: '0x807275727Dd3E640c5F2b5DE7d1eC72B4Dd293C0',
+            vaultShareToken: '0x203A662b0BD271A6ed5a60EdFbd04bFce608FD36', // e.g. vbUSDC on Katana
+            shareOFT: '0x807275727Dd3E640c5F2b5DE7d1eC72B4Dd293C0', // Share OFT Adapter on Katana
         },
-        // Ethereum contracts
         ethereum: {
-            vault: '0x53E82ABbb12638F09d9e624578ccB666217a765e',
-            composer: '0x8A35897fda9E024d2aC20a937193e099679eC477',
-            stargatePoolUSDC: '0xc026395860Db2d07ee33e05fE50ed7bD583189C7', // For bridging USDC to Base
+            vault: '0x53E82ABbb12638F09d9e624578ccB666217a765e', // ERC4626 vault for the asset
+            composer: '0x8A35897fda9E024d2aC20a937193e099679eC477', // OVaultComposer for the vault
+            stargatePool: '0xc026395860Db2d07ee33e05fE50ed7bD583189C7', // e.g. Stargate USDC Pool on Ethereum
         },
-        // Base contracts
         base: {
-            usdc: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+            asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // e.g. USDC on Base
         },
     },
 }
@@ -106,7 +102,7 @@ const safeTxs: SafeTransaction[] = []
 async function main() {
     console.log('='.repeat(80))
     console.log('Katana to Base Atomic Redemption')
-    console.log('Katana (vbUSDC shares) → Ethereum (Vault Redeem) → Base (USDC)')
+    console.log('Katana (vault shares) → Ethereum (Vault Redeem) → Base (asset)')
     console.log('='.repeat(80))
 
     // Validate configuration
@@ -130,12 +126,12 @@ async function main() {
     } else {
         console.log(`\n📍 Wallet Address: ${katanaWallet!.address}`)
     }
-    console.log(`💰 Amount: ${CONFIG.transaction.shareAmount} vbUSDC shares`)
+    console.log(`💰 Amount: ${CONFIG.transaction.amount} (vault shares)`)
     console.log(`📬 Recipient (Base): ${CONFIG.transaction.recipientAddress}`)
     console.log('='.repeat(80))
 
-    // Parse amount (vbUSDC shares have 6 decimals)
-    const shareAmount = ethers.utils.parseUnits(CONFIG.transaction.shareAmount, 6)
+    // Parse amount
+    const shareAmount = ethers.utils.parseUnits(CONFIG.transaction.amount, 6)
 
     // ============================================================================
     // Step 1: Preview Vault Redemption and Quote Second Hop Fee
@@ -145,29 +141,29 @@ async function main() {
     console.log('Step 1: Quoting Ethereum → Base Bridge Fee')
     console.log('='.repeat(80))
 
-    // Preview the vault redemption to get expected USDC
+    // Preview the vault redemption to get expected assets
     const vaultAbi = [
         'function previewRedeem(uint256) view returns (uint256)',
         'function decimals() view returns (uint8)',
     ]
     const vault = new ethers.Contract(CONFIG.contracts.ethereum.vault, vaultAbi, ethProvider)
 
-    const expectedUSDC = await vault.previewRedeem(shareAmount)
+    const expectedAssets = await vault.previewRedeem(shareAmount)
     const vaultDecimals = await vault.decimals()
 
-    console.log(`   Shares to redeem: ${ethers.utils.formatUnits(shareAmount, vaultDecimals)} vbUSDC`)
-    console.log(`   Expected USDC: ${ethers.utils.formatUnits(expectedUSDC, 6)} USDC`)
+    console.log(`   Shares to redeem: ${ethers.utils.formatUnits(shareAmount, vaultDecimals)}`)
+    console.log(`   Expected assets: ${ethers.utils.formatUnits(expectedAssets, 6)}`)
 
-    // Calculate min USDC with slippage
-    const minUSDC = calculateMinAmount(expectedUSDC, CONFIG.transaction.slippageBps)
-    console.log(`   Min USDC (${CONFIG.transaction.slippageBps / 100}% slippage): ${ethers.utils.formatUnits(minUSDC, 6)} USDC`)
+    // Calculate min assets with slippage
+    const minAssets = calculateMinAmount(expectedAssets, CONFIG.transaction.slippageBps)
+    console.log(`   Min assets (${CONFIG.transaction.slippageBps / 100}% slippage): ${ethers.utils.formatUnits(minAssets, 6)}`)
 
     // Build SendParam for second hop: Ethereum → Base (via Stargate)
     const secondHopSendParam = {
         dstEid: CONFIG.base.eid,
         to: addressToBytes32(CONFIG.transaction.recipientAddress),
-        amountLD: expectedUSDC,
-        minAmountLD: minUSDC,
+        amountLD: expectedAssets,
+        minAmountLD: minAssets,
         extraOptions: Options.newOptions().addExecutorLzReceiveOption(100000, 0).toHex(),
         composeMsg: '0x',
         oftCmd: '0x',
@@ -178,7 +174,7 @@ async function main() {
         'function quoteSend((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),bool) view returns ((uint256,uint256))',
     ]
     const ethStargatePool = new ethers.Contract(
-        CONFIG.contracts.ethereum.stargatePoolUSDC,
+        CONFIG.contracts.ethereum.stargatePool,
         stargatePoolAbi,
         ethProvider
     )
@@ -229,7 +225,7 @@ async function main() {
     )
 
     console.log(`   Compose message length: ${composeMsg.length} bytes`)
-    console.log(`   Contains instructions for: Redeem shares + Bridge USDC to Base`)
+    console.log(`   Contains instructions for: Redeem shares + Bridge asset to Base`)
 
     // ============================================================================
     // Step 3: Build LayerZero Options
@@ -274,8 +270,8 @@ async function main() {
 
     console.log(`   Destination: Ethereum (EID ${CONFIG.ethereum.eid})`)
     console.log(`   Receiver: OVaultComposer (${CONFIG.contracts.ethereum.composer})`)
-    console.log(`   Amount: ${ethers.utils.formatUnits(shareAmount, 6)} vbUSDC shares`)
-    console.log(`   Min Amount: ${ethers.utils.formatUnits(minShares, 6)} vbUSDC shares`)
+    console.log(`   Amount: ${ethers.utils.formatUnits(shareAmount, 6)} shares`)
+    console.log(`   Min Amount: ${ethers.utils.formatUnits(minShares, 6)} shares`)
     console.log(`   ✅ SendParam built`)
 
     // ============================================================================
@@ -309,11 +305,11 @@ async function main() {
     console.log(`   (Includes compose execution cost on Ethereum)`)
 
     // ============================================================================
-    // Step 6: Check and Approve vbUSDC Shares
+    // Step 6: Check and Approve Vault Shares
     // ============================================================================
 
     console.log('\n' + '='.repeat(80))
-    console.log('Step 6: Checking vbUSDC Approval')
+    console.log('Step 6: Checking Vault Share Approval')
     console.log('='.repeat(80))
 
     const erc20Abi = [
@@ -321,33 +317,33 @@ async function main() {
         'function approve(address,uint256) returns (bool)',
         'function balanceOf(address) view returns (uint256)',
     ]
-    const vbUsdc = new ethers.Contract(CONFIG.contracts.katana.vbUsdcToken, erc20Abi, katanaWallet || katanaProvider)
+    const shareToken = new ethers.Contract(CONFIG.contracts.katana.vaultShareToken, erc20Abi, katanaWallet || katanaProvider)
 
     if (SAFE_MODE) {
         safeTxs.push(buildSafeTx(
-            CONFIG.contracts.katana.vbUsdcToken,
-            vbUsdc.interface.encodeFunctionData('approve', [CONFIG.contracts.katana.shareOFT, shareAmount])
+            CONFIG.contracts.katana.vaultShareToken,
+            shareToken.interface.encodeFunctionData('approve', [CONFIG.contracts.katana.shareOFT, shareAmount])
         ))
         console.log(`   ⏭️  Balance check skipped in Safe mode`)
-        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(shareAmount, 6)} vbUSDC)`)
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(shareAmount, 6)} shares)`)
     } else {
         // Check balance
-        const vbUsdcBalance = await vbUsdc.balanceOf(katanaWallet!.address)
-        console.log(`   vbUSDC Balance: ${ethers.utils.formatUnits(vbUsdcBalance, 6)} vbUSDC`)
+        const shareBalance = await shareToken.balanceOf(katanaWallet!.address)
+        console.log(`   Share balance: ${ethers.utils.formatUnits(shareBalance, 6)}`)
 
-        if (vbUsdcBalance.lt(shareAmount)) {
+        if (shareBalance.lt(shareAmount)) {
             throw new Error(
-                `Insufficient vbUSDC balance. Have ${ethers.utils.formatUnits(vbUsdcBalance, 6)}, need ${ethers.utils.formatUnits(shareAmount, 6)}`
+                `Insufficient share balance. Have ${ethers.utils.formatUnits(shareBalance, 6)}, need ${ethers.utils.formatUnits(shareAmount, 6)}`
             )
         }
 
         // Check and approve
-        const currentAllowance = await vbUsdc.allowance(katanaWallet!.address, CONFIG.contracts.katana.shareOFT)
-        console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)} vbUSDC`)
+        const currentAllowance = await shareToken.allowance(katanaWallet!.address, CONFIG.contracts.katana.shareOFT)
+        console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)}`)
 
         if (currentAllowance.lt(shareAmount)) {
-            console.log(`   🔓 Approving ${ethers.utils.formatUnits(shareAmount, 6)} vbUSDC...`)
-            const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, shareAmount)
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(shareAmount, 6)} shares...`)
+            const approveTx = await shareToken.approve(CONFIG.contracts.katana.shareOFT, shareAmount)
             console.log(`   Transaction: ${approveTx.hash}`)
             await approveTx.wait()
             console.log(`   ✅ Approval confirmed`)
@@ -407,8 +403,8 @@ async function main() {
     console.log(`   From: Katana`)
     console.log(`   Via: Ethereum (vault redemption)`)
     console.log(`   To: Base`)
-    console.log(`   Amount: ${CONFIG.transaction.shareAmount} vbUSDC shares`)
-    console.log(`   Expected USDC: ${ethers.utils.formatUnits(expectedUSDC, 6)} USDC`)
+    console.log(`   Amount: ${CONFIG.transaction.amount} vault shares`)
+    console.log(`   Expected assets: ${ethers.utils.formatUnits(expectedAssets, 6)}`)
     console.log(`   Final recipient: ${CONFIG.transaction.recipientAddress}`)
     console.log(`   Total native needed: ${ethers.utils.formatEther(firstHopFee)}`)
 
@@ -442,17 +438,17 @@ async function main() {
     console.log('🎉 Atomic Transaction Sent Successfully!')
     console.log('='.repeat(80))
     console.log(`\nTransaction Summary:`)
-    console.log(`   • Sent: ${CONFIG.transaction.shareAmount} vbUSDC shares from Katana`)
-    console.log(`   • Expected USDC: ~${ethers.utils.formatUnits(expectedUSDC, 6)} USDC`)
+    console.log(`   • Sent: ${CONFIG.transaction.amount} vault shares from Katana`)
+    console.log(`   • Expected assets: ~${ethers.utils.formatUnits(expectedAssets, 6)}`)
     console.log(`   • Recipient on Base: ${CONFIG.transaction.recipientAddress}`)
     console.log(`   • Total fee paid: ${ethers.utils.formatEther(firstHopFee)} native`)
     console.log(`\nWhat happens next:`)
     console.log(`   1. ⏳ Katana → Ethereum: Shares bridge to OVaultComposer (~2-5 min)`)
-    console.log(`   2. ⏳ On Ethereum: Composer redeems shares for USDC (automatic)`)
-    console.log(`   3. ⏳ Ethereum → Base: USDC bridges via Stargate (~2-5 min)`)
+    console.log(`   2. ⏳ On Ethereum: Composer redeems shares for asset (automatic)`)
+    console.log(`   3. ⏳ Ethereum → Base: Asset bridges via Stargate (~2-5 min)`)
     console.log(`\n📍 Track your transaction:`)
     console.log(`   LayerZero Scan: https://layerzeroscan.com/tx/${tx.hash}`)
-    console.log('\n✨ Your USDC will arrive on Base in ~5-10 minutes!')
+    console.log('\n✨ Your assets will arrive on Base in ~5-10 minutes!')
     console.log('='.repeat(80))
 }
 
