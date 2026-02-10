@@ -211,16 +211,16 @@ async function main() {
     if (SAFE_MODE) {
         safeTxs.push(buildSafeTx(
             CONFIG.contracts.usdc,
-            usdc.interface.encodeFunctionData('approve', [CONFIG.contracts.composer, ethers.constants.MaxUint256])
+            usdc.interface.encodeFunctionData('approve', [CONFIG.contracts.composer, amount])
         ))
-        console.log(`   ✅ Approval added to Safe payload`)
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(amount, usdcDecimals)} USDC)`)
     } else {
         const allowance = await usdc.allowance(wallet!.address, CONFIG.contracts.composer)
         console.log(`   Current allowance: ${ethers.utils.formatUnits(allowance, usdcDecimals)} USDC`)
 
         if (allowance.lt(amount)) {
-            console.log(`   🔓 Approving USDC...`)
-            const approveTx = await usdc.approve(CONFIG.contracts.composer, ethers.constants.MaxUint256)
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(amount, usdcDecimals)} USDC...`)
+            const approveTx = await usdc.approve(CONFIG.contracts.composer, amount)
             console.log(`   Transaction: ${approveTx.hash}`)
             await approveTx.wait()
             console.log(`   ✅ Approval confirmed`)

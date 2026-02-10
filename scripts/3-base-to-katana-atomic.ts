@@ -311,10 +311,10 @@ async function main() {
     if (SAFE_MODE) {
         safeTxs.push(buildSafeTx(
             CONFIG.contracts.base.usdc,
-            usdc.interface.encodeFunctionData('approve', [CONFIG.contracts.base.stargatePoolUSDC, ethers.constants.MaxUint256])
+            usdc.interface.encodeFunctionData('approve', [CONFIG.contracts.base.stargatePoolUSDC, usdcAmount])
         ))
         console.log(`   ⏭️  Balance check skipped in Safe mode`)
-        console.log(`   ✅ Approval added to Safe payload`)
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(usdcAmount, 6)} USDC)`)
     } else {
         // Check balance
         const usdcBalance = await usdc.balanceOf(baseWallet!.address)
@@ -331,8 +331,8 @@ async function main() {
         console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)} USDC`)
 
         if (currentAllowance.lt(usdcAmount)) {
-            console.log(`   🔓 Approving USDC...`)
-            const approveTx = await usdc.approve(CONFIG.contracts.base.stargatePoolUSDC, ethers.constants.MaxUint256)
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(usdcAmount, 6)} USDC...`)
+            const approveTx = await usdc.approve(CONFIG.contracts.base.stargatePoolUSDC, usdcAmount)
             console.log(`   Transaction: ${approveTx.hash}`)
             await approveTx.wait()
             console.log(`   ✅ Approval confirmed`)

@@ -309,16 +309,16 @@ async function main() {
     if (SAFE_MODE) {
         safeTxs.push(buildSafeTx(
             CONFIG.contracts.katana.vbUsdcToken,
-            vbUsdc.interface.encodeFunctionData('approve', [CONFIG.contracts.katana.shareOFT, ethers.constants.MaxUint256])
+            vbUsdc.interface.encodeFunctionData('approve', [CONFIG.contracts.katana.shareOFT, amount])
         ))
-        console.log(`   ✅ Approval added to Safe payload`)
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(amount, shareDecimals)} vbUSDC)`)
     } else {
         const allowance = await vbUsdc.allowance(katanaWallet!.address, CONFIG.contracts.katana.shareOFT)
         console.log(`   Current allowance: ${ethers.utils.formatUnits(allowance, shareDecimals)} vbUSDC`)
 
         if (allowance.lt(amount)) {
-            console.log(`   🔓 Approving vbUSDC...`)
-            const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, ethers.constants.MaxUint256)
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(amount, shareDecimals)} vbUSDC...`)
+            const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, amount)
             console.log(`   Transaction: ${approveTx.hash}`)
             await approveTx.wait()
             console.log(`   ✅ Approval confirmed`)
