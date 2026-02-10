@@ -5,9 +5,9 @@ Standalone scripts demonstrating cross-chain ERC4626 vault operations using Laye
 ## Overview
 
 This project enables cross-chain vault operations across three chains:
-- **Ethereum** - Main ERC4626 vault holding USDC
-- **Katana** - Users can hold vault shares (vbUSDC)
-- **Base** - Bridge USDC for atomic operations
+- **Ethereum** - Main ERC4626 vault (hub chain)
+- **Katana** - Users hold vault shares (e.g. vbUSDC, vbUSDT, vbWBTC)
+- **Base** - Bridge assets for atomic operations
 
 **Supported Assets:** USDC, USDT, and WBTC (ETH/WETH not supported)
 
@@ -62,28 +62,28 @@ No private key required. Outputs a JSON file to `safe_payloads/` that can be imp
 ## Scripts
 
 ### [Script 1: Ethereum → Katana Deposit](#script-1-ethereum-to-katana-deposit)
-Deposit USDC on Ethereum, receive vault shares on Katana.
+Deposit asset on Ethereum, receive vault shares on Katana.
 
 ```bash
 npm run 1
 ```
 
 ### [Script 2: Katana → Ethereum Redemption](#script-2-katana-to-ethereum-redemption)
-Redeem vault shares from Katana, receive USDC on Ethereum.
+Redeem vault shares from Katana, receive asset on Ethereum.
 
 ```bash
 npm run 2
 ```
 
 ### [Script 3: Base → Katana Atomic](#script-3-base-to-katana-atomic)
-Atomic operation: Send USDC from Base, receive shares on Katana (via Ethereum).
+Atomic operation: Send asset from Base, receive shares on Katana (via Ethereum).
 
 ```bash
 npm run 3
 ```
 
 ### [Script 4: Katana → Base Atomic](#script-4-katana-to-base-atomic)
-Atomic operation: Send shares from Katana, receive USDC on Base (via Ethereum).
+Atomic operation: Send shares from Katana, receive asset on Base (via Ethereum).
 
 ```bash
 npm run 4
@@ -97,16 +97,16 @@ npm run 4
 
 **Flow:**
 ```
-Ethereum (USDC) → Vault Deposit → Katana (vbUSDC shares)
+Ethereum (asset) → Vault Deposit → Katana (vault shares)
 ```
 
 **What it does:**
-1. Approves USDC to OVaultComposer on Ethereum
-2. Composer deposits USDC into vault, receives shares
+1. Approves asset to OVaultComposer on Ethereum
+2. Composer deposits asset into vault, receives shares
 3. Bridges shares to Katana via LayerZero OFT
 
 **Requirements:**
-- USDC balance on Ethereum
+- Asset balance on Ethereum (e.g. USDC, USDT, WBTC)
 - ETH for gas fees
 
 **File:** `scripts/1-ethereum-to-katana-deposit.ts`
@@ -120,17 +120,17 @@ Ethereum (USDC) → Vault Deposit → Katana (vbUSDC shares)
 
 **Flow:**
 ```
-Katana (vbUSDC) → Bridge → Ethereum Vault Redeem → USDC
+Katana (vault shares) → Bridge → Ethereum Vault Redeem → asset
 ```
 
 **What it does:**
-1. Approves vbUSDC to Share OFT on Katana
+1. Approves vault shares to Share OFT on Katana
 2. Bridges shares to OVaultComposer on Ethereum
 3. Composer redeems shares from vault (via lzCompose)
-4. USDC sent to recipient on Ethereum
+4. Asset sent to recipient on Ethereum
 
 **Requirements:**
-- vbUSDC balance on Katana
+- Vault share balance on Katana (e.g. vbUSDC, vbUSDT, vbWBTC)
 - Native token for gas + LayerZero fees
 
 **File:** `scripts/2-katana-to-ethereum-redemption.ts`
@@ -154,18 +154,18 @@ transaction: {
 
 **Flow:**
 ```
-Base (USDC) → Stargate → Ethereum (Vault) → LayerZero → Katana (vbUSDC)
+Base (asset) → Stargate → Ethereum (Vault) → LayerZero → Katana (vault shares)
 ```
 
 **What it does:**
-1. Approves USDC to Stargate Pool on Base
+1. Approves asset to Stargate Pool on Base
 2. Single atomic transaction:
-   - Stargate bridges USDC to Ethereum
+   - Stargate bridges asset to Ethereum
    - Composer deposits into vault (via lzCompose)
    - Composer bridges shares to Katana
 
 **Requirements:**
-- USDC balance on Base
+- Asset balance on Base (e.g. USDC, USDT, WBTC)
 - ETH for gas + LayerZero fees (covers all 3 chains)
 
 **File:** `scripts/3-base-to-katana-atomic.ts`
@@ -173,14 +173,14 @@ Base (USDC) → Stargate → Ethereum (Vault) → LayerZero → Katana (vbUSDC)
 **Configuration:**
 ```typescript
 transaction: {
-    usdcAmount: '10.0',
+    amount: '10.0',           // Amount of asset to deposit (e.g. USDC)
     recipientAddress: '0x...',
-    composeGas: 1000000,  // Gas for atomic operation
+    composeGas: 1000000,      // Gas for atomic operation
 }
 ```
 
 **Example Transactions:**
-- [Hop 1: Base → Ethereum](https://layerzeroscan.com/tx/0x71bf33cab89949fff5174070d6ff7424e43c2cf1789151dbb8e543885703e95a) (Stargate USDC bridge + vault deposit)
+- [Hop 1: Base → Ethereum](https://layerzeroscan.com/tx/0x71bf33cab89949fff5174070d6ff7424e43c2cf1789151dbb8e543885703e95a) (Stargate asset bridge + vault deposit)
 - [Hop 2: Ethereum → Katana](https://layerzeroscan.com/tx/0x42b09fce460301636367b8048c31ab89b30b9b35fab80cd098067615e66b99fa) (share bridge)
 
 ---
@@ -189,18 +189,18 @@ transaction: {
 
 **Flow:**
 ```
-Katana (vbUSDC) → LayerZero → Ethereum (Vault) → Stargate → Base (USDC)
+Katana (vault shares) → LayerZero → Ethereum (Vault) → Stargate → Base (asset)
 ```
 
 **What it does:**
-1. Approves vbUSDC to Share OFT on Katana
+1. Approves vault shares to Share OFT on Katana
 2. Single atomic transaction:
    - Share OFT bridges to Ethereum
    - Composer redeems from vault (via lzCompose)
-   - Composer bridges USDC to Base via Stargate
+   - Composer bridges asset to Base via Stargate
 
 **Requirements:**
-- vbUSDC balance on Katana
+- Vault share balance on Katana (e.g. vbUSDC, vbUSDT, vbWBTC)
 - Native token for gas + LayerZero fees (covers all 3 chains)
 
 **File:** `scripts/4-katana-to-base-atomic.ts`
@@ -208,15 +208,15 @@ Katana (vbUSDC) → LayerZero → Ethereum (Vault) → Stargate → Base (USDC)
 **Configuration:**
 ```typescript
 transaction: {
-    shareAmount: '10.0',
+    amount: '10.0',           // Amount of vault shares to redeem (e.g. vbUSDC)
     recipientAddress: '0x...',
-    composeGas: 1000000,  // Gas for atomic operation
+    composeGas: 1000000,      // Gas for atomic operation
 }
 ```
 
 **Example Transactions:**
 - [Hop 1: Katana → Ethereum](https://layerzeroscan.com/tx/0x9d01ee2a3f7cea3dd3e03f2a4efd231cd07f3db1ee624862e41011ad549879b4) (share bridge + vault redemption)
-- [Hop 2: Ethereum → Base](https://layerzeroscan.com/tx/0xa783113d5bdcd59ff00d52ddd709a30d262457a2cd37e92800cca6febe05ce44) (Stargate USDC bridge)
+- [Hop 2: Ethereum → Base](https://layerzeroscan.com/tx/0xa783113d5bdcd59ff00d52ddd709a30d262457a2cd37e92800cca6febe05ce44) (Stargate asset bridge)
 
 ---
 
@@ -230,7 +230,7 @@ The key differences between bridging assets to/from **Katana network** (using Va
 
 | Aspect | Standard Bridge | Katana Vault Bridge |
 |--------|-----------------|---------------------|
-| **Asset** | Same token in/out | USDC in → vbUSDC out |
+| **Asset** | Same token in/out | Asset in → vault shares out (e.g. USDC → vbUSDC) |
 | **Yield** | None | Underlying earns via Morpho vaults |
 | **Contracts** | 1 (Pool/OFT) | 3+ (Vault + Composer + OFT) |
 | **Compose** | Optional | Required for redemptions |
@@ -244,7 +244,7 @@ The key differences between bridging assets to/from **Katana network** (using Va
 
 | Network | Token Deposited | Token Received | Mechanism |
 |---------|-----------------|----------------|-----------|
-| **Katana** | USDC | **vbUSDC** (vault shares) | ERC4626 vault deposit + OFT bridge |
+| **Katana** | Asset (e.g. USDC) | **Vault shares** (e.g. vbUSDC) | ERC4626 vault deposit + OFT bridge |
 | **Other L2** | USDC | USDC | Standard Stargate/OFT bridge |
 
 **Katana-specific**: You receive **yield-bearing vault shares**, not the underlying asset.
@@ -328,37 +328,37 @@ const composeMsg = ethers.utils.defaultAbiCoder.encode(
 
 #### Direct from Ethereum (Script 1)
 ```
-1. approve(USDC → OVaultComposer)
+1. approve(asset → OVaultComposer)
 2. composer.depositAndSend(amount, sendParam, refund)
    └── internally: vault.deposit() → shareOFT.send()
 ```
 
 #### Atomic from Base (Script 3 - 2-hop)
 ```
-1. approve(USDC → Stargate Pool)
+1. approve(asset → Stargate Pool)
 2. stargatePool.send() with composeMsg
-   └── Hop 1: Base → Ethereum (USDC via Stargate)
+   └── Hop 1: Base → Ethereum (asset via Stargate)
    └── lzCompose: composer deposits + bridges shares
-   └── Hop 2: Ethereum → Katana (vbUSDC via OFT)
+   └── Hop 2: Ethereum → Katana (shares via OFT)
 ```
 
 ### Withdrawing FROM Katana
 
 #### To Ethereum (Script 2)
 ```
-1. approve(vbUSDC → Share OFT on Katana)
+1. approve(vault shares → Share OFT on Katana)
 2. shareOFT.send() with composeMsg
    └── bridges shares to OVaultComposer
-   └── lzCompose: composer.redeem() → sends USDC to recipient
+   └── lzCompose: composer.redeem() → sends asset to recipient
 ```
 
 #### Atomic to Base (Script 4 - 2-hop)
 ```
-1. approve(vbUSDC → Share OFT on Katana)
+1. approve(vault shares → Share OFT on Katana)
 2. shareOFT.send() with nested composeMsg
    └── Hop 1: Katana → Ethereum (shares via OFT)
    └── lzCompose: composer.redeem() + stargate.send()
-   └── Hop 2: Ethereum → Base (USDC via Stargate)
+   └── Hop 2: Ethereum → Base (asset via Stargate)
 ```
 
 ---
@@ -384,26 +384,28 @@ const options = Options.newOptions()
 
 ## Contract Addresses (Mainnet)
 
+> The addresses below are **example values for vbUSDC**. Replace with the corresponding addresses for the vault asset you are using (e.g. vbUSDT, vbWBTC).
+
 ### Ethereum (EID: 30101)
-| Contract | Address |
-|----------|---------|
-| USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` |
-| VaultBridge | `0x53E82ABbb12638F09d9e624578ccB666217a765e` |
-| OVaultComposer | `0x8A35897fda9E024d2aC20a937193e099679eC477` |
-| Share OFT Adapter | `0xb5bADA33542a05395d504a25885e02503A957Bb3` |
-| Stargate USDC Pool | `0xc026395860Db2d07ee33e05fE50ed7bD583189C7` |
+| Contract | Address | Notes |
+|----------|---------|-------|
+| Asset | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | e.g. USDC |
+| Vault | `0x53E82ABbb12638F09d9e624578ccB666217a765e` | ERC4626 vault for the asset |
+| OVaultComposer | `0x8A35897fda9E024d2aC20a937193e099679eC477` | Composer for the vault |
+| Share OFT Adapter | `0xb5bADA33542a05395d504a25885e02503A957Bb3` | Share OFT on Ethereum |
+| Stargate Pool | `0xc026395860Db2d07ee33e05fE50ed7bD583189C7` | e.g. Stargate USDC Pool |
 
 ### Base (EID: 30184)
-| Contract | Address |
-|----------|---------|
-| USDC | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` |
-| Stargate USDC Pool | `0x27a16dc786820B16E5c9028b75B99F6f604b5d26` |
+| Contract | Address | Notes |
+|----------|---------|-------|
+| Asset | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` | e.g. USDC on Base |
+| Stargate Pool | `0x27a16dc786820B16E5c9028b75B99F6f604b5d26` | e.g. Stargate USDC Pool on Base |
 
 ### Katana (EID: 30375)
-| Contract | Address |
-|----------|---------|
-| vbUSDC Token | `0x203A662b0BD271A6ed5a60EdFbd04bFce608FD36` |
-| Share OFT | `0x807275727Dd3E640c5F2b5DE7d1eC72B4Dd293C0` |
+| Contract | Address | Notes |
+|----------|---------|-------|
+| Vault Share Token | `0x203A662b0BD271A6ed5a60EdFbd04bFce608FD36` | e.g. vbUSDC on Katana |
+| Share OFT | `0x807275727Dd3E640c5F2b5DE7d1eC72B4Dd293C0` | Share OFT on Katana |
 
 ---
 
