@@ -25,6 +25,7 @@
 import { ethers } from 'ethers'
 import { parseUnits } from 'ethers/lib/utils'
 import { Options, addressToBytes32 } from '@layerzerolabs/lz-v2-utilities'
+import { isSafeMode, buildSafeTx, writeSafePayload, SafeTransaction } from './utils/safe-payload'
 
 // ============================================================================
 // Configuration
@@ -74,6 +75,9 @@ const CONFIG = {
 // Main Script
 // ============================================================================
 
+const SAFE_MODE = isSafeMode()
+const safeTxs: SafeTransaction[] = []
+
 async function main() {
     console.log('='.repeat(80))
     console.log('Ethereum to Katana Deposit')
@@ -81,7 +85,7 @@ async function main() {
     console.log('='.repeat(80))
 
     // Validate configuration
-    if (CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
+    if (!SAFE_MODE && CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
         throw new Error('Please set your private key in CONFIG.privateKey')
     }
     if (CONFIG.transaction.recipientAddress === '<YOUR_RECIPIENT_ADDRESS_ON_KATANA>') {
@@ -90,9 +94,13 @@ async function main() {
 
     // Setup provider and wallet
     const ethereumProvider = new ethers.providers.JsonRpcProvider(CONFIG.ethereum.rpcUrl)
-    const wallet = new ethers.Wallet(CONFIG.privateKey, ethereumProvider)
+    const wallet = SAFE_MODE ? null : new ethers.Wallet(CONFIG.privateKey, ethereumProvider)
 
-    console.log(`\n📍 Wallet Address: ${wallet.address}`)
+    if (SAFE_MODE) {
+        console.log(`\n🔐 Safe Mode: Generating transaction payload`)
+    } else {
+        console.log(`\n📍 Wallet Address: ${wallet!.address}`)
+    }
     console.log(`💰 Amount: ${CONFIG.transaction.amount} USDC`)
     console.log(`📬 Recipient (Katana): ${CONFIG.transaction.recipientAddress}`)
     console.log('='.repeat(80))
@@ -112,19 +120,23 @@ async function main() {
         'function approve(address,uint256) returns (bool)',
     ]
 
-    const usdc = new ethers.Contract(CONFIG.contracts.usdc, erc20Abi, wallet)
+    const usdc = new ethers.Contract(CONFIG.contracts.usdc, erc20Abi, wallet || ethereumProvider)
     const usdcDecimals = await usdc.decimals()
     const amount = parseUnits(CONFIG.transaction.amount, usdcDecimals)
 
-    const balance = await usdc.balanceOf(wallet.address)
-    console.log(`   Your USDC balance: ${ethers.utils.formatUnits(balance, usdcDecimals)} USDC`)
+    if (!SAFE_MODE) {
+        const balance = await usdc.balanceOf(wallet!.address)
+        console.log(`   Your USDC balance: ${ethers.utils.formatUnits(balance, usdcDecimals)} USDC`)
 
-    if (balance.lt(amount)) {
-        throw new Error(
-            `Insufficient USDC balance. Need ${CONFIG.transaction.amount}, have ${ethers.utils.formatUnits(balance, usdcDecimals)}`
-        )
+        if (balance.lt(amount)) {
+            throw new Error(
+                `Insufficient USDC balance. Need ${CONFIG.transaction.amount}, have ${ethers.utils.formatUnits(balance, usdcDecimals)}`
+            )
+        }
+        console.log(`   ✅ Sufficient balance`)
+    } else {
+        console.log(`   ⏭️  Balance check skipped in Safe mode`)
     }
-    console.log(`   ✅ Sufficient balance`)
 
     // ============================================================================
     // Step 2: Preview Vault Deposit
@@ -196,17 +208,25 @@ async function main() {
     console.log('Step 4: Approving USDC to OVaultComposer')
     console.log('='.repeat(80))
 
-    const allowance = await usdc.allowance(wallet.address, CONFIG.contracts.composer)
-    console.log(`   Current allowance: ${ethers.utils.formatUnits(allowance, usdcDecimals)} USDC`)
-
-    if (allowance.lt(amount)) {
-        console.log(`   🔓 Approving USDC...`)
-        const approveTx = await usdc.approve(CONFIG.contracts.composer, ethers.constants.MaxUint256)
-        console.log(`   Transaction: ${approveTx.hash}`)
-        await approveTx.wait()
-        console.log(`   ✅ Approval confirmed`)
+    if (SAFE_MODE) {
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.usdc,
+            usdc.interface.encodeFunctionData('approve', [CONFIG.contracts.composer, amount])
+        ))
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(amount, usdcDecimals)} USDC)`)
     } else {
-        console.log(`   ✅ Sufficient allowance`)
+        const allowance = await usdc.allowance(wallet!.address, CONFIG.contracts.composer)
+        console.log(`   Current allowance: ${ethers.utils.formatUnits(allowance, usdcDecimals)} USDC`)
+
+        if (allowance.lt(amount)) {
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(amount, usdcDecimals)} USDC...`)
+            const approveTx = await usdc.approve(CONFIG.contracts.composer, amount)
+            console.log(`   Transaction: ${approveTx.hash}`)
+            await approveTx.wait()
+            console.log(`   ✅ Approval confirmed`)
+        } else {
+            console.log(`   ✅ Sufficient allowance`)
+        }
     }
 
     // ============================================================================
@@ -225,7 +245,32 @@ async function main() {
     const composerAbi = [
         'function depositAndSend(uint256,(uint32,bytes32,uint256,uint256,bytes,bytes,bytes),address) payable',
     ]
-    const composer = new ethers.Contract(CONFIG.contracts.composer, composerAbi, wallet)
+
+    if (SAFE_MODE) {
+        const iface = new ethers.utils.Interface(composerAbi)
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.composer,
+            iface.encodeFunctionData('depositAndSend', [
+                amount,
+                [sendParam.dstEid, sendParam.to, sendParam.amountLD, sendParam.minAmountLD, sendParam.extraOptions, sendParam.composeMsg, sendParam.oftCmd],
+                CONFIG.transaction.recipientAddress,
+            ]),
+            bridgeFee.toString()
+        ))
+
+        const { chainId } = await ethereumProvider.getNetwork()
+        const filepath = writeSafePayload(1, chainId, 'Ethereum to Katana Deposit', safeTxs)
+        console.log('\n' + '='.repeat(80))
+        console.log('✅ Safe Payload Generated')
+        console.log('='.repeat(80))
+        console.log(`   File: ${filepath}`)
+        console.log(`   Transactions: ${safeTxs.length} (approval + deposit & bridge)`)
+        console.log(`   Import this file into Safe Transaction Builder`)
+        console.log('='.repeat(80))
+        return
+    }
+
+    const composer = new ethers.Contract(CONFIG.contracts.composer, composerAbi, wallet!)
 
     console.log(`\n📤 Sending transaction...`)
     const tx = await composer.depositAndSend(
@@ -239,7 +284,7 @@ async function main() {
             sendParam.composeMsg,
             sendParam.oftCmd,
         ],
-        wallet.address, // refund address for excess ETH
+        wallet!.address, // refund address for excess ETH
         { value: bridgeFee }
     )
 

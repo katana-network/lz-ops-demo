@@ -27,6 +27,7 @@
 
 import { ethers } from 'ethers'
 import { addressToBytes32, Options } from '@layerzerolabs/lz-v2-utilities'
+import { isSafeMode, buildSafeTx, writeSafePayload, SafeTransaction } from './utils/safe-payload'
 
 // ============================================================================
 // Configuration
@@ -99,6 +100,9 @@ function calculateMinAmount(amount: ethers.BigNumber, slippageBps: number): ethe
 // Main Script
 // ============================================================================
 
+const SAFE_MODE = isSafeMode()
+const safeTxs: SafeTransaction[] = []
+
 async function main() {
     console.log('='.repeat(80))
     console.log('Katana to Base Atomic Redemption')
@@ -106,7 +110,7 @@ async function main() {
     console.log('='.repeat(80))
 
     // Validate configuration
-    if (CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
+    if (!SAFE_MODE && CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
         throw new Error('Please set your private key in CONFIG.privateKey')
     }
     if (CONFIG.transaction.recipientAddress === '<YOUR_RECIPIENT_ADDRESS_ON_BASE>') {
@@ -119,9 +123,13 @@ async function main() {
     // Setup providers and wallet
     const katanaProvider = new ethers.providers.JsonRpcProvider(CONFIG.katana.rpcUrl)
     const ethProvider = new ethers.providers.JsonRpcProvider(CONFIG.ethereum.rpcUrl)
-    const katanaWallet = new ethers.Wallet(CONFIG.privateKey, katanaProvider)
+    const katanaWallet = SAFE_MODE ? null : new ethers.Wallet(CONFIG.privateKey, katanaProvider)
 
-    console.log(`\n📍 Wallet Address: ${katanaWallet.address}`)
+    if (SAFE_MODE) {
+        console.log(`\n🔐 Safe Mode: Generating transaction payload`)
+    } else {
+        console.log(`\n📍 Wallet Address: ${katanaWallet!.address}`)
+    }
     console.log(`💰 Amount: ${CONFIG.transaction.shareAmount} vbUSDC shares`)
     console.log(`📬 Recipient (Base): ${CONFIG.transaction.recipientAddress}`)
     console.log('='.repeat(80))
@@ -313,30 +321,39 @@ async function main() {
         'function approve(address,uint256) returns (bool)',
         'function balanceOf(address) view returns (uint256)',
     ]
-    const vbUsdc = new ethers.Contract(CONFIG.contracts.katana.vbUsdcToken, erc20Abi, katanaWallet)
+    const vbUsdc = new ethers.Contract(CONFIG.contracts.katana.vbUsdcToken, erc20Abi, katanaWallet || katanaProvider)
 
-    // Check balance
-    const vbUsdcBalance = await vbUsdc.balanceOf(katanaWallet.address)
-    console.log(`   vbUSDC Balance: ${ethers.utils.formatUnits(vbUsdcBalance, 6)} vbUSDC`)
-
-    if (vbUsdcBalance.lt(shareAmount)) {
-        throw new Error(
-            `Insufficient vbUSDC balance. Have ${ethers.utils.formatUnits(vbUsdcBalance, 6)}, need ${ethers.utils.formatUnits(shareAmount, 6)}`
-        )
-    }
-
-    // Check and approve
-    const currentAllowance = await vbUsdc.allowance(katanaWallet.address, CONFIG.contracts.katana.shareOFT)
-    console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)} vbUSDC`)
-
-    if (currentAllowance.lt(shareAmount)) {
-        console.log(`   🔓 Approving vbUSDC...`)
-        const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, ethers.constants.MaxUint256)
-        console.log(`   Transaction: ${approveTx.hash}`)
-        await approveTx.wait()
-        console.log(`   ✅ Approval confirmed`)
+    if (SAFE_MODE) {
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.katana.vbUsdcToken,
+            vbUsdc.interface.encodeFunctionData('approve', [CONFIG.contracts.katana.shareOFT, shareAmount])
+        ))
+        console.log(`   ⏭️  Balance check skipped in Safe mode`)
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(shareAmount, 6)} vbUSDC)`)
     } else {
-        console.log(`   ✅ Sufficient allowance`)
+        // Check balance
+        const vbUsdcBalance = await vbUsdc.balanceOf(katanaWallet!.address)
+        console.log(`   vbUSDC Balance: ${ethers.utils.formatUnits(vbUsdcBalance, 6)} vbUSDC`)
+
+        if (vbUsdcBalance.lt(shareAmount)) {
+            throw new Error(
+                `Insufficient vbUSDC balance. Have ${ethers.utils.formatUnits(vbUsdcBalance, 6)}, need ${ethers.utils.formatUnits(shareAmount, 6)}`
+            )
+        }
+
+        // Check and approve
+        const currentAllowance = await vbUsdc.allowance(katanaWallet!.address, CONFIG.contracts.katana.shareOFT)
+        console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)} vbUSDC`)
+
+        if (currentAllowance.lt(shareAmount)) {
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(shareAmount, 6)} vbUSDC...`)
+            const approveTx = await vbUsdc.approve(CONFIG.contracts.katana.shareOFT, shareAmount)
+            console.log(`   Transaction: ${approveTx.hash}`)
+            await approveTx.wait()
+            console.log(`   ✅ Approval confirmed`)
+        } else {
+            console.log(`   ✅ Sufficient allowance`)
+        }
     }
 
     // ============================================================================
@@ -350,10 +367,40 @@ async function main() {
     const sendAbi = [
         'function send((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),(uint256,uint256),address) payable returns ((bytes32,uint64))',
     ]
+
+    const messagingFee = {
+        nativeFee: firstHopFee,
+        lzTokenFee: 0,
+    }
+
+    if (SAFE_MODE) {
+        const iface = new ethers.utils.Interface(sendAbi)
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.katana.shareOFT,
+            iface.encodeFunctionData('send', [
+                [firstHopSendParam.dstEid, firstHopSendParam.to, firstHopSendParam.amountLD, firstHopSendParam.minAmountLD, firstHopSendParam.extraOptions, firstHopSendParam.composeMsg, firstHopSendParam.oftCmd],
+                [messagingFee.nativeFee, messagingFee.lzTokenFee],
+                CONFIG.transaction.recipientAddress,
+            ]),
+            firstHopFee.toString()
+        ))
+
+        const { chainId } = await katanaProvider.getNetwork()
+        const filepath = writeSafePayload(4, chainId, 'Katana to Base Atomic Redemption', safeTxs)
+        console.log('\n' + '='.repeat(80))
+        console.log('✅ Safe Payload Generated')
+        console.log('='.repeat(80))
+        console.log(`   File: ${filepath}`)
+        console.log(`   Transactions: ${safeTxs.length} (approval + atomic bridge & redeem)`)
+        console.log(`   Import this file into Safe Transaction Builder`)
+        console.log('='.repeat(80))
+        return
+    }
+
     const shareOFTWithSigner = new ethers.Contract(
         CONFIG.contracts.katana.shareOFT,
         sendAbi,
-        katanaWallet
+        katanaWallet!
     )
 
     console.log(`\n📋 Transaction Summary:`)
@@ -364,11 +411,6 @@ async function main() {
     console.log(`   Expected USDC: ${ethers.utils.formatUnits(expectedUSDC, 6)} USDC`)
     console.log(`   Final recipient: ${CONFIG.transaction.recipientAddress}`)
     console.log(`   Total native needed: ${ethers.utils.formatEther(firstHopFee)}`)
-
-    const messagingFee = {
-        nativeFee: firstHopFee,
-        lzTokenFee: 0,
-    }
 
     console.log(`\n📤 Sending transaction...`)
     const tx = await shareOFTWithSigner.send(
@@ -382,7 +424,7 @@ async function main() {
             firstHopSendParam.oftCmd,
         ],
         [messagingFee.nativeFee, messagingFee.lzTokenFee],
-        katanaWallet.address,
+        katanaWallet!.address,
         { value: firstHopFee }
     )
 

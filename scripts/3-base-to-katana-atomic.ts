@@ -26,6 +26,7 @@
 
 import { ethers } from 'ethers'
 import { addressToBytes32, Options } from '@layerzerolabs/lz-v2-utilities'
+import { isSafeMode, buildSafeTx, writeSafePayload, SafeTransaction } from './utils/safe-payload'
 
 // ============================================================================
 // Configuration
@@ -92,6 +93,9 @@ function calculateMinAmount(amount: ethers.BigNumber, slippageBps: number): ethe
 // Main Script
 // ============================================================================
 
+const SAFE_MODE = isSafeMode()
+const safeTxs: SafeTransaction[] = []
+
 async function main() {
     console.log('='.repeat(80))
     console.log('Base to Katana Atomic Deposit')
@@ -99,7 +103,7 @@ async function main() {
     console.log('='.repeat(80))
 
     // Validate configuration
-    if (CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
+    if (!SAFE_MODE && CONFIG.privateKey === '<YOUR_PRIVATE_KEY_HERE>') {
         throw new Error('Please set your private key in CONFIG.privateKey')
     }
     if (CONFIG.transaction.recipientAddress === '<YOUR_RECIPIENT_ADDRESS_ON_KATANA>') {
@@ -109,9 +113,13 @@ async function main() {
     // Setup providers and wallet
     const baseProvider = new ethers.providers.JsonRpcProvider(CONFIG.base.rpcUrl)
     const ethProvider = new ethers.providers.JsonRpcProvider(CONFIG.ethereum.rpcUrl)
-    const baseWallet = new ethers.Wallet(CONFIG.privateKey, baseProvider)
+    const baseWallet = SAFE_MODE ? null : new ethers.Wallet(CONFIG.privateKey, baseProvider)
 
-    console.log(`\n📍 Wallet Address: ${baseWallet.address}`)
+    if (SAFE_MODE) {
+        console.log(`\n🔐 Safe Mode: Generating transaction payload`)
+    } else {
+        console.log(`\n📍 Wallet Address: ${baseWallet!.address}`)
+    }
     console.log(`💰 Amount: ${CONFIG.transaction.usdcAmount} USDC`)
     console.log(`📬 Recipient (Katana): ${CONFIG.transaction.recipientAddress}`)
     console.log('='.repeat(80))
@@ -298,30 +306,39 @@ async function main() {
         'function approve(address,uint256) returns (bool)',
         'function balanceOf(address) view returns (uint256)',
     ]
-    const usdc = new ethers.Contract(CONFIG.contracts.base.usdc, erc20Abi, baseWallet)
+    const usdc = new ethers.Contract(CONFIG.contracts.base.usdc, erc20Abi, baseWallet || baseProvider)
 
-    // Check balance
-    const usdcBalance = await usdc.balanceOf(baseWallet.address)
-    console.log(`   USDC Balance: ${ethers.utils.formatUnits(usdcBalance, 6)} USDC`)
-
-    if (usdcBalance.lt(usdcAmount)) {
-        throw new Error(
-            `Insufficient USDC balance. Have ${ethers.utils.formatUnits(usdcBalance, 6)}, need ${ethers.utils.formatUnits(usdcAmount, 6)}`
-        )
-    }
-
-    // Check and approve
-    const currentAllowance = await usdc.allowance(baseWallet.address, CONFIG.contracts.base.stargatePoolUSDC)
-    console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)} USDC`)
-
-    if (currentAllowance.lt(usdcAmount)) {
-        console.log(`   🔓 Approving USDC...`)
-        const approveTx = await usdc.approve(CONFIG.contracts.base.stargatePoolUSDC, ethers.constants.MaxUint256)
-        console.log(`   Transaction: ${approveTx.hash}`)
-        await approveTx.wait()
-        console.log(`   ✅ Approval confirmed`)
+    if (SAFE_MODE) {
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.base.usdc,
+            usdc.interface.encodeFunctionData('approve', [CONFIG.contracts.base.stargatePoolUSDC, usdcAmount])
+        ))
+        console.log(`   ⏭️  Balance check skipped in Safe mode`)
+        console.log(`   ✅ Approval added to Safe payload (${ethers.utils.formatUnits(usdcAmount, 6)} USDC)`)
     } else {
-        console.log(`   ✅ Sufficient allowance`)
+        // Check balance
+        const usdcBalance = await usdc.balanceOf(baseWallet!.address)
+        console.log(`   USDC Balance: ${ethers.utils.formatUnits(usdcBalance, 6)} USDC`)
+
+        if (usdcBalance.lt(usdcAmount)) {
+            throw new Error(
+                `Insufficient USDC balance. Have ${ethers.utils.formatUnits(usdcBalance, 6)}, need ${ethers.utils.formatUnits(usdcAmount, 6)}`
+            )
+        }
+
+        // Check and approve
+        const currentAllowance = await usdc.allowance(baseWallet!.address, CONFIG.contracts.base.stargatePoolUSDC)
+        console.log(`   Current allowance: ${ethers.utils.formatUnits(currentAllowance, 6)} USDC`)
+
+        if (currentAllowance.lt(usdcAmount)) {
+            console.log(`   🔓 Approving ${ethers.utils.formatUnits(usdcAmount, 6)} USDC...`)
+            const approveTx = await usdc.approve(CONFIG.contracts.base.stargatePoolUSDC, usdcAmount)
+            console.log(`   Transaction: ${approveTx.hash}`)
+            await approveTx.wait()
+            console.log(`   ✅ Approval confirmed`)
+        } else {
+            console.log(`   ✅ Sufficient allowance`)
+        }
     }
 
     // ============================================================================
@@ -335,10 +352,40 @@ async function main() {
     const sendAbi = [
         'function send((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),(uint256,uint256),address) payable returns ((bytes32,uint64))',
     ]
+
+    const messagingFee = {
+        nativeFee: firstHopFee,
+        lzTokenFee: 0,
+    }
+
+    if (SAFE_MODE) {
+        const iface = new ethers.utils.Interface(sendAbi)
+        safeTxs.push(buildSafeTx(
+            CONFIG.contracts.base.stargatePoolUSDC,
+            iface.encodeFunctionData('send', [
+                [firstHopSendParam.dstEid, firstHopSendParam.to, firstHopSendParam.amountLD, firstHopSendParam.minAmountLD, firstHopSendParam.extraOptions, firstHopSendParam.composeMsg, firstHopSendParam.oftCmd],
+                [messagingFee.nativeFee, messagingFee.lzTokenFee],
+                CONFIG.transaction.recipientAddress,
+            ]),
+            firstHopFee.toString()
+        ))
+
+        const { chainId } = await baseProvider.getNetwork()
+        const filepath = writeSafePayload(3, chainId, 'Base to Katana Atomic Deposit', safeTxs)
+        console.log('\n' + '='.repeat(80))
+        console.log('✅ Safe Payload Generated')
+        console.log('='.repeat(80))
+        console.log(`   File: ${filepath}`)
+        console.log(`   Transactions: ${safeTxs.length} (approval + atomic bridge & deposit)`)
+        console.log(`   Import this file into Safe Transaction Builder`)
+        console.log('='.repeat(80))
+        return
+    }
+
     const stargatePoolWithSigner = new ethers.Contract(
         CONFIG.contracts.base.stargatePoolUSDC,
         sendAbi,
-        baseWallet
+        baseWallet!
     )
 
     console.log(`\n📋 Transaction Summary:`)
@@ -349,11 +396,6 @@ async function main() {
     console.log(`   Expected shares: ${ethers.utils.formatUnits(expectedShares, shareDecimals)} vbUSDC`)
     console.log(`   Final recipient: ${CONFIG.transaction.recipientAddress}`)
     console.log(`   Total ETH needed: ${ethers.utils.formatEther(firstHopFee)} ETH`)
-
-    const messagingFee = {
-        nativeFee: firstHopFee,
-        lzTokenFee: 0,
-    }
 
     console.log(`\n📤 Sending transaction...`)
     const tx = await stargatePoolWithSigner.send(
@@ -367,7 +409,7 @@ async function main() {
             firstHopSendParam.oftCmd,
         ],
         [messagingFee.nativeFee, messagingFee.lzTokenFee],
-        baseWallet.address,
+        baseWallet!.address,
         { value: firstHopFee }
     )
 

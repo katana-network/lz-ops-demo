@@ -46,6 +46,19 @@ npm run 3    # Base → Katana atomic deposit
 npm run 4    # Katana → Base atomic redemption
 ```
 
+### Safe Mode (Gnosis Safe)
+
+To generate a Safe Transaction Builder payload instead of executing directly:
+
+```bash
+npm run 1 -- --safe
+npm run 2 -- --safe
+npm run 3 -- --safe
+npm run 4 -- --safe
+```
+
+No private key required. Outputs a JSON file to `safe_payloads/` that can be imported into the [Safe Transaction Builder](https://app.safe.global/). Each payload includes both the approval and the main transaction.
+
 ## Scripts
 
 ### [Script 1: Ethereum → Katana Deposit](#script-1-ethereum-to-katana-deposit)
