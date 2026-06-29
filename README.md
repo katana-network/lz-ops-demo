@@ -44,6 +44,7 @@ npm run 1    # Ethereum → Katana deposit
 npm run 2    # Katana → Ethereum redemption
 npm run 3    # Base → Katana atomic deposit
 npm run 4    # Katana → Base atomic redemption
+npm run 5    # Ethereum → Katana bridge (existing vbUSDC)
 ```
 
 ### Safe Mode (Gnosis Safe)
@@ -55,6 +56,7 @@ npm run 1 -- --safe
 npm run 2 -- --safe
 npm run 3 -- --safe
 npm run 4 -- --safe
+npm run 5 -- --safe
 ```
 
 No private key required. Outputs a JSON file to `safe_payloads/` that can be imported into the [Safe Transaction Builder](https://app.safe.global/). Each payload includes both the approval and the main transaction.
@@ -87,6 +89,13 @@ Atomic operation: Send shares from Katana, receive asset on Base (via Ethereum).
 
 ```bash
 npm run 4
+```
+
+### [Script 5: Ethereum → Katana Bridge (vbUSDC)](#script-5-ethereum-to-katana-bridge-vbusdc)
+Bridge existing vault shares (vbUSDC) from Ethereum directly to Katana — no deposit needed.
+
+```bash
+npm run 5
 ```
 
 ---
@@ -217,6 +226,23 @@ transaction: {
 **Example Transactions:**
 - [Hop 1: Katana → Ethereum](https://layerzeroscan.com/tx/0x9d01ee2a3f7cea3dd3e03f2a4efd231cd07f3db1ee624862e41011ad549879b4) (share bridge + vault redemption)
 - [Hop 2: Ethereum → Base](https://layerzeroscan.com/tx/0xa783113d5bdcd59ff00d52ddd709a30d262457a2cd37e92800cca6febe05ce44) (Stargate asset bridge)
+
+### Script 5: Ethereum to Katana Bridge (vbUSDC)
+
+**Flow:**
+```
+Ethereum (vbUSDC) → LayerZero OFT → Katana (vbUSDC)
+```
+
+**What it does:**
+1. Approves vbUSDC to Share OFT Adapter on Ethereum
+2. Bridges vbUSDC directly to the recipient on Katana
+
+**Requirements:**
+- vbUSDC balance on Ethereum (existing vault shares)
+- ETH for gas fees + LayerZero bridge fee
+
+**File:** `scripts/5-ethereum-to-katana-bridge-vbusdc.ts`
 
 ---
 
@@ -417,6 +443,7 @@ const options = Options.newOptions()
 | Script 2 | 800,000 | ✅ Tested |
 | Script 3 | 1,000,000 | ✅ Tested |
 | Script 4 | 1,000,000 | ✅ Tested |
+| Script 5 | N/A | ✅ Tested |
 
 ---
 
